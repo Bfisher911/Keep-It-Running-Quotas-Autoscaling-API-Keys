@@ -1,0 +1,784 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Keep It Running: Quotas, Autoscaling & API Keys</title>
+    <!-- Tailwind CSS CDN for easy styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts - Inter for a clean look -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <!-- Font Awesome for icons (trash can, refresh) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <style>
+        /* Custom CSS for dial inputs */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 100%;
+            height: 8px;
+            background: #d1d5db; /* Light gray track */
+            outline: none;
+            opacity: 0.7;
+            transition: opacity .15s ease-in-out;
+            border-radius: 4px;
+        }
+
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            width: 20px;
+            height: 20px;
+            background: #4f46e5; /* Indigo thumb */
+            cursor: pointer;
+            border-radius: 50%;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            transition: background 0.2s ease-in-out;
+        }
+
+        input[type="range"]::-moz-range-thumb {
+            width: 20px;
+            height: 20px;
+            background: #4f46e5; /* Indigo thumb */
+            cursor: pointer;
+            border-radius: 50%;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+            transition: background 0.2s ease-in-out;
+        }
+
+        input[type="range"]:hover::-webkit-slider-thumb {
+            background: #6366f1; /* Lighter indigo on hover */
+        }
+
+        input[type="range"]:hover::-moz-range-thumb {
+            background: #6366f1; /* Lighter indigo on hover */
+        }
+
+        /* Custom styling for the gauge canvas */
+        #quotaGaugeCanvas, #quotaBarChartCanvas, #latencyGraphCanvas {
+            max-width: 100%;
+            height: auto;
+            border-radius: 0.5rem;
+            background-color: #f3f4f6; /* Light gray background */
+        }
+
+        /* Tooltip styling */
+        .tooltip-container {
+            position: relative;
+            display: inline-block;
+            cursor: help;
+        }
+
+        .tooltip-content {
+            visibility: hidden;
+            opacity: 0;
+            background-color: #333;
+            color: #fff;
+            text-align: center;
+            border-radius: 6px;
+            padding: 8px 12px;
+            position: absolute;
+            z-index: 1000;
+            bottom: 125%; /* Position above the text */
+            left: 50%;
+            transform: translateX(-50%);
+            white-space: nowrap;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+            transition: opacity 0.3s, visibility 0.3s;
+        }
+
+        .tooltip-content::after {
+            content: "";
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            margin-left: -5px;
+            border-width: 5px;
+            border-style: solid;
+            border-color: #333 transparent transparent transparent;
+        }
+
+        .tooltip-container:hover .tooltip-content,
+        .tooltip-container:focus-within .tooltip-content {
+            visibility: visible;
+            opacity: 1;
+        }
+
+        /* Specific styles for the throttle alert banner */
+        .throttle-alert {
+            transform: translateY(-100%);
+            transition: transform 0.5s ease-out;
+        }
+
+        .throttle-alert.active {
+            transform: translateY(0);
+        }
+
+        /* Smooth transitions for table rows */
+        .api-key-row {
+            transition: background-color 0.3s ease;
+        }
+        .api-key-row:hover {
+            background-color: #e0e7ff; /* Light indigo on hover */
+        }
+
+        /* Custom scrollbar for better aesthetics */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: #f1f1f1;
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: #888;
+            border-radius: 10px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: #555;
+        }
+
+        /* Base font styling */
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f8fafc; /* Light background */
+            color: #334155; /* Darker text */
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <!-- Throttle Alert Banner -->
+    <div id="throttleAlert" class="throttle-alert fixed top-0 left-0 right-0 bg-red-600 text-white p-3 text-center text-lg font-semibold shadow-lg z-50 rounded-b-lg flex items-center justify-center space-x-4" role="alert" aria-live="polite">
+        <span><i class="fas fa-exclamation-triangle mr-2"></i>Quota <span id="quotaPercentage"></span>% reached! Consider adjusting your usage.</span>
+        <button id="closeAlert" class="ml-auto text-white hover:text-red-200 focus:outline-none focus:ring-2 focus:ring-red-300 rounded-full p-1" aria-label="Close alert">
+            <i class="fas fa-times"></i>
+        </button>
+    </div>
+
+    <main class="container mx-auto bg-white shadow-xl rounded-xl p-6 md:p-10 border border-gray-200">
+        <h1 class="text-4xl font-bold text-center text-indigo-700 mb-8 md:mb-12">Keep It Running: Quotas, Autoscaling & API Keys</h1>
+
+        <!-- Main layout for desktop (two columns) and mobile (stacked accordions) -->
+        <div class="flex flex-col md:flex-row gap-8">
+
+            <!-- Controls Section (Left on Desktop) -->
+            <section class="md:w-1/2 space-y-8">
+
+                <!-- Quota Dashboard Simulator -->
+                <div class="bg-indigo-50 p-6 rounded-lg shadow-md border border-indigo-200">
+                    <h2 class="text-2xl font-semibold text-indigo-800 mb-4">Quota Dashboard Simulator</h2>
+                    <div class="mb-4">
+                        <label for="requestsPerSec" class="block text-gray-700 font-medium mb-2" aria-label="Requests per second dial">Requests/sec: <span id="requestsPerSecValue" class="font-bold text-indigo-600">50</span></label>
+                        <input type="range" id="requestsPerSec" min="0" max="200" value="50" class="w-full">
+                    </div>
+                    <div class="mb-4">
+                        <label for="tokensPerMin" class="block text-gray-700 font-medium mb-2" aria-label="Tokens per minute dial">Tokens/min: <span id="tokensPerMinValue" class="font-bold text-indigo-600">10000</span></label>
+                        <input type="range" id="tokensPerMin" min="0" max="50000" value="10000" class="w-full">
+                    </div>
+                </div>
+
+                <!-- Autoscaling Playground -->
+                <div class="bg-green-50 p-6 rounded-lg shadow-md border border-green-200">
+                    <h2 class="text-2xl font-semibold text-green-800 mb-4">Autoscaling Playground</h2>
+                    <div class="mb-4">
+                        <label for="minReplicas" class="block text-gray-700 font-medium mb-2" aria-label="Minimum replicas slider">Min Replicas: <span id="minReplicasValue" class="font-bold text-green-600">1</span></label>
+                        <input type="range" id="minReplicas" min="0" max="10" value="1" class="w-full">
+                    </div>
+                    <div class="mb-4">
+                        <label for="maxReplicas" class="block text-gray-700 font-medium mb-2" aria-label="Maximum replicas slider">Max Replicas: <span id="maxReplicasValue" class="font-bold text-green-600">10</span></label>
+                        <input type="range" id="maxReplicas" min="1" max="50" value="10" class="w-full">
+                    </div>
+                    <div class="flex items-center mb-4">
+                        <input type="checkbox" id="targetCPU" class="h-5 w-5 text-green-600 rounded focus:ring-green-500 mr-2" aria-label="Target CPU percentage toggle">
+                        <label for="targetCPU" class="text-gray-700 font-medium">Target CPU % Enabled</label>
+                    </div>
+                </div>
+
+                <!-- Cost Estimator -->
+                <div class="bg-yellow-50 p-6 rounded-lg shadow-md border border-yellow-200">
+                    <h2 class="text-2xl font-semibold text-yellow-800 mb-4">Cost Estimator</h2>
+                    <p class="text-gray-700 mb-2">Estimated Monthly Cost:</p>
+                    <p class="text-4xl font-bold text-yellow-700" aria-live="polite" aria-atomic="true">$<span id="estimatedCost">0.00</span></p>
+                    <p class="text-sm text-gray-500 mt-2">Based on average replicas, 24 hours/day, and a mock price of $0.05/replica/hour.</p>
+                </div>
+
+            </section>
+
+            <!-- Display Section (Right on Desktop) -->
+            <section class="md:w-1/2 space-y-8">
+
+                <!-- Quota Dashboard Display -->
+                <div class="bg-indigo-50 p-6 rounded-lg shadow-md border border-indigo-200">
+                    <h2 class="text-2xl font-semibold text-indigo-800 mb-4">Quota Usage</h2>
+                    <div class="flex flex-col md:flex-row items-center justify-around gap-4">
+                        <div class="flex-1 min-w-0">
+                            <h3 class="text-lg font-medium text-gray-700 mb-2">Requests/sec Gauge</h3>
+                            <canvas id="quotaGaugeCanvas" class="w-full h-48"></canvas>
+                        </div>
+                        <div class="flex-1 min-w-0">
+                            <h3 class="text-lg font-medium text-gray-700 mb-2">Usage Bar Chart</h3>
+                            <canvas id="quotaBarChartCanvas" class="w-full h-48"></canvas>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Autoscaling Playground Display -->
+                <div class="bg-green-50 p-6 rounded-lg shadow-md border border-green-200">
+                    <h2 class="text-2xl font-semibold text-green-800 mb-4">Predicted Latency vs. Replicas</h2>
+                    <canvas id="latencyGraphCanvas" class="w-full h-64"></canvas>
+                    <p class="text-sm text-gray-500 mt-4">
+                        <span class="tooltip-container">
+                            <span class="font-semibold text-gray-700">p95 latency</span>
+                            <span class="tooltip-content">
+                                <span class="block mb-1">The 95th percentile latency, meaning 95% of requests are faster than this value.</span>
+                                <button class="text-xs text-white bg-gray-500 hover:bg-gray-600 rounded px-2 py-1 mt-1 close-tooltip" aria-label="Close tooltip">X</button>
+                            </span>
+                        </span>
+                        is the maximum latency experienced by 95% of users.
+                        <span class="tooltip-container">
+                            <span class="font-semibold text-gray-700">Cold start</span>
+                            <span class="tooltip-content">
+                                <span class="block mb-1">The delay incurred when a serverless function or container needs to start up from an idle state.</span>
+                                <button class="text-xs text-white bg-gray-500 hover:bg-gray-600 rounded px-2 py-1 mt-1 close-tooltip" aria-label="Close tooltip">X</button>
+                            </span>
+                        </span>
+                        can impact performance at low replica counts.
+                    </p>
+                </div>
+
+                <!-- API-Key Manager -->
+                <div class="bg-blue-50 p-6 rounded-lg shadow-md border border-blue-200">
+                    <h2 class="text-2xl font-semibold text-blue-800 mb-4">API-Key Manager</h2>
+                    <button id="generateKeyBtn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg shadow-md transition duration-300 ease-in-out transform hover:scale-105 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75 mb-4" aria-label="Generate new API key">
+                        <i class="fas fa-plus-circle mr-2"></i>Generate Key
+                    </button>
+                    <div class="overflow-x-auto rounded-lg border border-blue-200">
+                        <table class="min-w-full bg-white rounded-lg">
+                            <thead class="bg-blue-100">
+                                <tr>
+                                    <th class="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">Key</th>
+                                    <th class="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">Scope</th>
+                                    <th class="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">Age</th>
+                                    <th class="py-3 px-4 text-left text-sm font-semibold text-blue-700 uppercase tracking-wider">Actions</th>
+                                </tr>
+                            </thead>
+                            <tbody id="apiKeyTableBody" class="divide-y divide-blue-100">
+                                <!-- API keys will be inserted here by JavaScript -->
+                            </tbody>
+                        </table>
+                    </div>
+                    <p class="text-sm text-gray-500 mt-4">
+                        <span class="tooltip-container">
+                            <span class="font-semibold text-gray-700">Rotation interval</span>
+                            <span class="tooltip-content">
+                                <span class="block mb-1">The recommended period after which an API key should be regenerated for security purposes.</span>
+                                <button class="text-xs text-white bg-gray-500 hover:bg-gray-600 rounded px-2 py-1 mt-1 close-tooltip" aria-label="Close tooltip">X</button>
+                            </span>
+                        </span>
+                        is crucial for security.
+                    </p>
+                </div>
+
+            </section>
+        </div>
+    </main>
+
+    <script>
+        // --- Configuration Constants ---
+        // Quota thresholds for the alert banner
+        const QUOTA_REQUESTS_THRESHOLD = 160; // Requests/sec
+        const QUOTA_TOKENS_THRESHOLD = 40000; // Tokens/min
+        const QUOTA_ALERT_PERCENTAGE = 80; // Percentage to display in the alert
+
+        // Cost estimator pricing
+        const PRICE_PER_REPLICA_PER_HOUR = 0.05; // Mock price
+        const HOURS_PER_DAY = 24;
+        const DAYS_PER_MONTH = 30; // For monthly estimation
+
+        // Latency graph parameters
+        const BASE_LATENCY = 50; // Base latency in ms
+        const COLD_START_PENALTY = 100; // Penalty for very low replica counts
+        const CPU_EFFICIENCY_FACTOR_ON = 1.5; // Multiplier when target CPU is enabled
+        const CPU_EFFICIENCY_FACTOR_OFF = 1.0; // Multiplier when target CPU is disabled
+
+        // --- DOM Elements ---
+        const requestsPerSecInput = document.getElementById('requestsPerSec');
+        const requestsPerSecValueSpan = document.getElementById('requestsPerSecValue');
+        const tokensPerMinInput = document.getElementById('tokensPerMin');
+        const tokensPerMinValueSpan = document.getElementById('tokensPerMinValue');
+
+        const quotaGaugeCanvas = document.getElementById('quotaGaugeCanvas');
+        const quotaBarChartCanvas = document.getElementById('quotaBarChartCanvas');
+        const gaugeCtx = quotaGaugeCanvas.getContext('2d');
+        const barChartCtx = quotaBarChartCanvas.getContext('2d');
+
+        const minReplicasInput = document.getElementById('minReplicas');
+        const minReplicasValueSpan = document.getElementById('minReplicasValue');
+        const maxReplicasInput = document.getElementById('maxReplicas');
+        const maxReplicasValueSpan = document.getElementById('maxReplicasValue');
+        const targetCPUCheckbox = document.getElementById('targetCPU');
+
+        const latencyGraphCanvas = document.getElementById('latencyGraphCanvas');
+        const latencyGraphCtx = latencyGraphCanvas.getContext('2d');
+
+        const generateKeyBtn = document.getElementById('generateKeyBtn');
+        const apiKeyTableBody = document.getElementById('apiKeyTableBody');
+
+        const throttleAlert = document.getElementById('throttleAlert');
+        const quotaPercentageSpan = document.getElementById('quotaPercentage');
+        const closeAlertBtn = document.getElementById('closeAlert');
+
+        const estimatedCostSpan = document.getElementById('estimatedCost');
+
+        // --- Global State ---
+        let apiKeys = []; // Array to store API key objects
+
+        // --- Utility Functions ---
+
+        /**
+         * Generates a random alphanumeric string for API keys.
+         * @param {number} length - The desired length of the string.
+         * @returns {string} - The random string.
+         */
+        function generateRandomString(length) {
+            const characters = 'abcdefghijklmnopqrstuvwxyz0123456789';
+            let result = '';
+            for (let i = 0; i < length; i++) {
+                result += characters.charAt(Math.floor(Math.random() * characters.length));
+            }
+            return result;
+        }
+
+        /**
+         * Formats a number as a currency string.
+         * @param {number} amount - The numeric amount.
+         * @returns {string} - The formatted currency string.
+         */
+        function formatCurrency(amount) {
+            return amount.toFixed(2);
+        }
+
+        // --- Quota Dashboard Functions ---
+
+        /**
+         * Draws the gauge on the canvas.
+         * @param {CanvasRenderingContext2D} ctx - The canvas rendering context.
+         * @param {number} value - The current value.
+         * @param {number} max - The maximum value.
+         * @param {string} color - The color for the gauge fill.
+         */
+        function drawGauge(ctx, value, max, color) {
+            const canvas = ctx.canvas;
+            const centerX = canvas.width / 2;
+            const centerY = canvas.height; // Bottom center for semi-circle
+            const radius = Math.min(centerX, centerY) * 0.8;
+
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear canvas
+
+            // Draw background arc
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius, Math.PI, 2 * Math.PI, false);
+            ctx.lineWidth = 20;
+            ctx.strokeStyle = '#e2e8f0'; // Light gray background
+            ctx.stroke();
+
+            // Draw value arc
+            const percentage = value / max;
+            const endAngle = Math.PI + (percentage * Math.PI); // From 180 to 360 degrees
+            ctx.beginPath();
+            ctx.arc(centerX, centerY, radius, Math.PI, endAngle, false);
+            ctx.lineWidth = 20;
+            ctx.strokeStyle = color;
+            ctx.stroke();
+
+            // Draw text value
+            ctx.font = 'bold 24px Inter';
+            ctx.fillStyle = '#334155';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(value.toString(), centerX, centerY - radius / 2);
+        }
+
+        /**
+         * Draws the bar chart on the canvas.
+         * @param {CanvasRenderingContext2D} ctx - The canvas rendering context.
+         * @param {number} requestsValue - Current requests/sec value.
+         * @param {number} tokensValue - Current tokens/min value.
+         * @param {number} maxRequests - Max requests/sec.
+         * @param {number} maxTokens - Max tokens/min.
+         */
+        function drawBarChart(ctx, requestsValue, tokensValue, maxRequests, maxTokens) {
+            const canvas = ctx.canvas;
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear canvas
+
+            const barWidth = 60;
+            const spacing = 40;
+            const startX = (canvas.width - (barWidth * 2 + spacing)) / 2;
+            const baseY = canvas.height - 30; // Base for bars, leaving space for labels
+
+            // Colors for bars
+            const requestsColor = '#4f46e5'; // Indigo
+            const tokensColor = '#8b5cf6'; // Violet
+
+            // Draw Requests Bar
+            const requestsHeight = (requestsValue / maxRequests) * (canvas.height - 60);
+            ctx.fillStyle = requestsColor;
+            ctx.fillRect(startX, baseY - requestsHeight, barWidth, requestsHeight);
+            ctx.font = '14px Inter';
+            ctx.fillStyle = '#334155';
+            ctx.textAlign = 'center';
+            ctx.fillText('Requests', startX + barWidth / 2, baseY + 20);
+            ctx.fillText(requestsValue.toString(), startX + barWidth / 2, baseY - requestsHeight - 10);
+
+            // Draw Tokens Bar
+            const tokensHeight = (tokensValue / maxTokens) * (canvas.height - 60);
+            ctx.fillStyle = tokensColor;
+            ctx.fillRect(startX + barWidth + spacing, baseY - tokensHeight, barWidth, tokensHeight);
+            ctx.font = '14px Inter';
+            ctx.fillStyle = '#334155';
+            ctx.textAlign = 'center';
+            ctx.fillText('Tokens', startX + barWidth + spacing + barWidth / 2, baseY + 20);
+            ctx.fillText(tokensValue.toString(), startX + barWidth + spacing + barWidth / 2, baseY - tokensHeight - 10);
+        }
+
+        /**
+         * Updates the quota dashboard (gauge and bar chart) based on current slider values.
+         */
+        function updateQuotaDashboard() {
+            const requests = parseInt(requestsPerSecInput.value);
+            const tokens = parseInt(tokensPerMinInput.value);
+
+            requestsPerSecValueSpan.textContent = requests;
+            tokensPerMinValueSpan.textContent = tokens;
+
+            // Redraw gauge (using requests for example)
+            drawGauge(gaugeCtx, requests, requestsPerSecInput.max, '#4f46e5'); // Indigo
+
+            // Redraw bar chart
+            drawBarChart(barChartCtx, requests, tokens, requestsPerSecInput.max, tokensPerMinInput.max);
+
+            checkQuotaThresholds(requests, tokens);
+        }
+
+        /**
+         * Checks if quota thresholds are exceeded and shows/hides the alert banner.
+         * @param {number} requests - Current requests/sec.
+         * @param {number} tokens - Current tokens/min.
+         */
+        function checkQuotaThresholds(requests, tokens) {
+            const requestsExceeded = requests >= QUOTA_REQUESTS_THRESHOLD;
+            const tokensExceeded = tokens >= QUOTA_TOKENS_THRESHOLD;
+
+            if (requestsExceeded || tokensExceeded) {
+                quotaPercentageSpan.textContent = QUOTA_ALERT_PERCENTAGE;
+                throttleAlert.classList.add('active');
+            } else {
+                throttleAlert.classList.remove('active');
+            }
+        }
+
+        // --- Autoscaling Playground Functions ---
+
+        /**
+         * Calculates predicted p95 latency based on replica count and CPU target.
+         * @param {number} replicaCount - The number of replicas.
+         * @param {boolean} targetCPUEnabled - Whether target CPU is enabled.
+         * @returns {number} - The predicted p95 latency in ms.
+         */
+        function calculateLatency(replicaCount, targetCPUEnabled) {
+            let efficiencyFactor = targetCPUEnabled ? CPU_EFFICIENCY_FACTOR_ON : CPU_EFFICIENCY_FACTOR_OFF;
+            let latency = BASE_LATENCY / (replicaCount * efficiencyFactor);
+
+            // Add cold start penalty for very low replica counts
+            if (replicaCount < 2) {
+                latency += COLD_START_PENALTY * (2 - replicaCount); // More penalty for 0 or 1 replica
+            }
+            return Math.max(10, latency); // Minimum latency of 10ms
+        }
+
+        /**
+         * Draws the latency line graph on the canvas.
+         * @param {CanvasRenderingContext2D} ctx - The canvas rendering context.
+         * @param {number} minReplicas - Minimum replicas.
+         * @param {number} maxReplicas - Maximum replicas.
+         * @param {boolean} targetCPUEnabled - Whether target CPU is enabled.
+         */
+        function drawLatencyGraph(ctx, minReplicas, maxReplicas, targetCPUEnabled) {
+            const canvas = ctx.canvas;
+            ctx.clearRect(0, 0, canvas.width, canvas.height); // Clear canvas
+
+            const padding = 40;
+            const chartWidth = canvas.width - 2 * padding;
+            const chartHeight = canvas.height - 2 * padding;
+
+            // Find max latency for scaling Y-axis
+            let maxLatency = 0;
+            for (let i = minReplicas; i <= maxReplicas; i++) {
+                maxLatency = Math.max(maxLatency, calculateLatency(i, targetCPUEnabled));
+            }
+            maxLatency = Math.ceil(maxLatency / 50) * 50; // Round up to nearest 50 for cleaner scale
+
+            // Draw X and Y axes
+            ctx.beginPath();
+            ctx.strokeStyle = '#cbd5e1'; // Light gray
+            ctx.lineWidth = 2;
+            ctx.moveTo(padding, padding);
+            ctx.lineTo(padding, padding + chartHeight); // Y-axis
+            ctx.lineTo(padding + chartWidth, padding + chartHeight); // X-axis
+            ctx.stroke();
+
+            // Draw X-axis labels (Replicas)
+            ctx.font = '12px Inter';
+            ctx.fillStyle = '#64748b';
+            ctx.textAlign = 'center';
+            const replicaStep = Math.max(1, Math.floor((maxReplicas - minReplicas) / 5)); // Show max 5-6 labels
+            for (let i = minReplicas; i <= maxReplicas; i += replicaStep) {
+                const x = padding + (i - minReplicas) / (maxReplicas - minReplicas) * chartWidth;
+                ctx.fillText(i.toString(), x, padding + chartHeight + 15);
+            }
+            ctx.fillText('Replicas', padding + chartWidth / 2, padding + chartHeight + 35);
+
+
+            // Draw Y-axis labels (Latency)
+            ctx.textAlign = 'right';
+            ctx.textBaseline = 'middle';
+            const latencyStep = Math.max(10, Math.floor(maxLatency / 4)); // Show max 4-5 labels
+            for (let i = 0; i <= maxLatency; i += latencyStep) {
+                const y = padding + chartHeight - (i / maxLatency) * chartHeight;
+                ctx.fillText(i.toString(), padding - 5, y);
+            }
+            ctx.save();
+            ctx.translate(padding - 30, padding + chartHeight / 2);
+            ctx.rotate(-Math.PI / 2);
+            ctx.fillText('Latency (ms)', 0, 0);
+            ctx.restore();
+
+
+            // Draw the latency line
+            ctx.beginPath();
+            ctx.strokeStyle = '#22c55e'; // Green
+            ctx.lineWidth = 3;
+            ctx.lineJoin = 'round';
+            ctx.lineCap = 'round';
+
+            for (let i = minReplicas; i <= maxReplicas; i++) {
+                const latency = calculateLatency(i, targetCPUEnabled);
+                const x = padding + (i - minReplicas) / (maxReplicas - minReplicas) * chartWidth;
+                const y = padding + chartHeight - (latency / maxLatency) * chartHeight;
+
+                if (i === minReplicas) {
+                    ctx.moveTo(x, y);
+                } else {
+                    ctx.lineTo(x, y);
+                }
+            }
+            ctx.stroke();
+        }
+
+        /**
+         * Updates the autoscaling playground and redraws the latency graph.
+         */
+        function updateAutoscalingPlayground() {
+            const min = parseInt(minReplicasInput.value);
+            const max = parseInt(maxReplicasInput.value);
+            const targetCPU = targetCPUCheckbox.checked;
+
+            // Ensure min <= max
+            if (min > max) {
+                minReplicasInput.value = max;
+                minReplicasValueSpan.textContent = max;
+            }
+
+            minReplicasValueSpan.textContent = minReplicasInput.value;
+            maxReplicasValueSpan.textContent = maxReplicasInput.value;
+
+            drawLatencyGraph(latencyGraphCtx, parseInt(minReplicasInput.value), parseInt(maxReplicasInput.value), targetCPU);
+            updateCostEstimator(); // Cost depends on replica count
+        }
+
+        // --- API-Key Manager Functions ---
+
+        /**
+         * Generates a new mock API key and adds it to the list.
+         */
+        function generateApiKey() {
+            const newKey = `ak_${generateRandomString(32)}`;
+            const scopes = ['read', 'write', 'admin', 'billing'];
+            const randomScope = scopes[Math.floor(Math.random() * scopes.length)];
+            const age = '0 days'; // New key
+            const id = Date.now(); // Unique ID for key
+
+            apiKeys.push({ id, key: newKey, scope: randomScope, age });
+            renderApiKeysTable();
+        }
+
+        /**
+         * Deletes an API key from the list.
+         * @param {number} id - The unique ID of the key to delete.
+         */
+        function deleteApiKey(id) {
+            apiKeys = apiKeys.filter(key => key.id !== id);
+            renderApiKeysTable();
+        }
+
+        /**
+         * Rotates (regenerates) an existing API key.
+         * @param {number} id - The unique ID of the key to rotate.
+         */
+        function rotateApiKey(id) {
+            const index = apiKeys.findIndex(key => key.id === id);
+            if (index !== -1) {
+                apiKeys[index].key = `ak_${generateRandomString(32)}`;
+                apiKeys[index].age = '0 days'; // Reset age on rotation
+                renderApiKeysTable();
+            }
+        }
+
+        /**
+         * Renders the API keys into the table.
+         */
+        function renderApiKeysTable() {
+            apiKeyTableBody.innerHTML = ''; // Clear existing rows
+            if (apiKeys.length === 0) {
+                apiKeyTableBody.innerHTML = `
+                    <tr>
+                        <td colspan="4" class="py-4 px-4 text-center text-gray-500">No API keys generated yet.</td>
+                    </tr>
+                `;
+                return;
+            }
+
+            apiKeys.forEach(key => {
+                const row = document.createElement('tr');
+                row.className = 'api-key-row bg-white hover:bg-blue-50 transition-colors duration-200';
+                row.innerHTML = `
+                    <td class="py-3 px-4 text-sm text-gray-800 font-mono break-all">${key.key}</td>
+                    <td class="py-3 px-4 text-sm text-gray-600">${key.scope}</td>
+                    <td class="py-3 px-4 text-sm text-gray-600">${key.age}</td>
+                    <td class="py-3 px-4 text-sm">
+                        <button class="text-blue-600 hover:text-blue-800 mr-3 focus:outline-none focus:ring-2 focus:ring-blue-500 rounded-full p-1" onclick="rotateApiKey(${key.id})" aria-label="Rotate key ${key.key}">
+                            <i class="fas fa-sync-alt"></i>
+                        </button>
+                        <button class="text-red-600 hover:text-red-800 focus:outline-none focus:ring-2 focus:ring-red-500 rounded-full p-1" onclick="deleteApiKey(${key.id})" aria-label="Delete key ${key.key}">
+                            <i class="fas fa-trash-alt"></i>
+                        </button>
+                    </td>
+                `;
+                apiKeyTableBody.appendChild(row);
+            });
+        }
+
+        // --- Cost Estimator Functions ---
+
+        /**
+         * Updates the estimated cost based on current autoscaling settings.
+         */
+        function updateCostEstimator() {
+            const min = parseInt(minReplicasInput.value);
+            const max = parseInt(maxReplicasInput.value);
+
+            // Simplified average replica count for cost estimation
+            const averageReplicas = (min + max) / 2;
+            const estimatedMonthlyCost = averageReplicas * HOURS_PER_DAY * DAYS_PER_MONTH * PRICE_PER_REPLICA_PER_HOUR;
+            estimatedCostSpan.textContent = formatCurrency(estimatedMonthlyCost);
+        }
+
+        // --- Tooltip Functions ---
+
+        /**
+         * Sets up event listeners for all tooltip containers.
+         */
+        function setupTooltips() {
+            document.querySelectorAll('.tooltip-container').forEach(container => {
+                const tooltipContent = container.querySelector('.tooltip-content');
+                const closeButton = tooltipContent.querySelector('.close-tooltip');
+
+                // Show on hover
+                container.addEventListener('mouseenter', () => {
+                    tooltipContent.classList.remove('hidden');
+                });
+                // Hide on mouse leave
+                container.addEventListener('mouseleave', () => {
+                    tooltipContent.classList.add('hidden');
+                });
+
+                // Show on focus (for keyboard navigation)
+                container.addEventListener('focusin', () => {
+                    tooltipContent.classList.remove('hidden');
+                });
+                // Hide on blur (for keyboard navigation)
+                container.addEventListener('focusout', (event) => {
+                    // Only hide if focus moves outside the container and its children
+                    if (!container.contains(event.relatedTarget)) {
+                        tooltipContent.classList.add('hidden');
+                    }
+                });
+
+                // Close button functionality
+                if (closeButton) {
+                    closeButton.addEventListener('click', () => {
+                        tooltipContent.classList.add('hidden');
+                        container.focus(); // Return focus to the element that triggered the tooltip
+                    });
+                }
+            });
+        }
+
+        // --- Event Listeners ---
+
+        // Quota Dashboard
+        requestsPerSecInput.addEventListener('input', updateQuotaDashboard);
+        tokensPerMinInput.addEventListener('input', updateQuotaDashboard);
+
+        // Autoscaling Playground
+        minReplicasInput.addEventListener('input', updateAutoscalingPlayground);
+        maxReplicasInput.addEventListener('input', updateAutoscalingPlayground);
+        targetCPUCheckbox.addEventListener('change', updateAutoscalingPlayground);
+
+        // API-Key Manager
+        generateKeyBtn.addEventListener('click', generateApiKey);
+
+        // Throttle Alert Banner
+        closeAlertBtn.addEventListener('click', () => {
+            throttleAlert.classList.remove('active');
+        });
+
+        // --- Initial Setup ---
+        window.onload = () => {
+            // Set initial canvas dimensions to match their parent's current size
+            // This ensures responsiveness on initial load
+            const setCanvasDimensions = (canvas) => {
+                const parent = canvas.parentElement;
+                canvas.width = parent.clientWidth;
+                canvas.height = parent.clientHeight;
+            };
+
+            setCanvasDimensions(quotaGaugeCanvas);
+            setCanvasDimensions(quotaBarChartCanvas);
+            setCanvasDimensions(latencyGraphCanvas);
+
+            // Re-draw canvases on window resize
+            window.addEventListener('resize', () => {
+                setCanvasDimensions(quotaGaugeCanvas);
+                setCanvasDimensions(quotaBarChartCanvas);
+                setCanvasDimensions(latencyGraphCanvas);
+                updateQuotaDashboard();
+                updateAutoscalingPlayground();
+            });
+
+            // Initial updates to populate all sections
+            updateQuotaDashboard();
+            updateAutoscalingPlayground();
+            updateCostEstimator();
+            renderApiKeysTable(); // Render empty table initially
+            setupTooltips(); // Initialize tooltip functionality
+        };
+
+    </script>
+</body>
+</html>
